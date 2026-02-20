@@ -24,9 +24,13 @@
           <li class="nav-item">
             <a class="nav-link" href="{% url 'participant_list' %}">Participants</a>
           </li>
+
+          {% if center %}
           <li class="nav-item">
             <a class="nav-link" href="{% url 'participant_map' %}">Homes Map</a>
           </li>
+          {% endif %}
+
         </ul>
 
         <div class="d-flex align-items-center gap-3">
