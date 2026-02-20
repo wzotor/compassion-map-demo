@@ -411,3 +411,16 @@ def participants_csv_template(request):
     ])
 
     return response
+
+from django.contrib.auth.decorators import login_required, user_passes_test
+from .models import ProjectCenter
+from django.shortcuts import render
+
+def is_superuser(user):
+    return user.is_superuser
+
+@login_required
+@user_passes_test(is_superuser)
+def national_centers_map(request):
+    centers = ProjectCenter.objects.all()
+    return render(request, "centers/national_centers_map.html", {"centers": centers})
