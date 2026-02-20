@@ -13,12 +13,12 @@ class ProjectCenter(models.Model):
     latitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
-        validators=[MinValueValidator(-90), MaxValueValidator(90)]
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
     )
     longitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
-        validators=[MinValueValidator(-180), MaxValueValidator(180)]
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
     )
 
     beneficiaries = models.PositiveIntegerField()
@@ -39,7 +39,7 @@ class Participant(models.Model):
     project_center = models.ForeignKey(
         ProjectCenter,
         on_delete=models.CASCADE,
-        related_name="participants"
+        related_name="participants",
     )
 
     participant_name = models.CharField(max_length=200)
@@ -52,15 +52,22 @@ class Participant(models.Model):
     house_latitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
-        validators=[MinValueValidator(-90), MaxValueValidator(90)]
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
     )
     house_longitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
-        validators=[MinValueValidator(-180), MaxValueValidator(180)]
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["project_center"]),
+            models.Index(fields=["participant_id"]),
+            models.Index(fields=["project_center", "participant_id"]),
+        ]
 
     def __str__(self):
         return f"{self.participant_name} ({self.participant_id})"
