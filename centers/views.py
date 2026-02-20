@@ -2,16 +2,31 @@ import csv
 import io
 
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseForbidden
+from django.contrib.auth.decorators import login_required, user_passes_test
+from django.http import HttpResponseForbidden, HttpResponse
 from django.contrib import messages
 from django.contrib.auth import logout
 from django.views.decorators.http import require_http_methods
 
-from .models import ProjectCenter, Participant, UserProfile
+from .models import ProjectCenter, Participant, UserProfile, AuditLog
 from .forms import ParticipantForm, ParticipantUploadForm
 
-from django.http import HttpResponse
+
+def _log_action(user, action, project_center=None, participant_id=None, details=""):
+    """
+    Create an audit log record. Safe by default.
+    """
+    try:
+        AuditLog.objects.create(
+            user=user,
+            action=action,
+            project_center=project_center,
+            participant_id=participant_id,
+            details=details or "",
+        )
+    except Exception:
+        # Never break the app if logging fails
+        pass
 
 
 def map_view(request):
@@ -27,8 +42,7 @@ def map_view(request):
         centers = centers.filter(cluster=cluster)
 
     territories = (
-        ProjectCenter.objects
-        .order_by("territory")
+        ProjectCenter.objects.order_by("territory")
         .values_list("territory", flat=True)
         .distinct()
     )
@@ -36,8 +50,7 @@ def map_view(request):
     clusters = []
     if territory:
         clusters = (
-            ProjectCenter.objects
-            .filter(territory=territory)
+            ProjectCenter.objects.filter(territory=territory)
             .order_by("cluster")
             .values_list("cluster", flat=True)
             .distinct()
@@ -72,7 +85,9 @@ def participant_list(request):
             "Your account is not linked to any Project Center. Contact the admin."
         )
 
-    participants = Participant.objects.filter(project_center=center).order_by("participant_name")
+    participants = Participant.objects.filter(project_center=center).order_by(
+        "participant_name"
+    )
 
     total_count = participants.count()
     male_count = participants.filter(sex="M").count()
@@ -108,6 +123,15 @@ def participant_add(request):
             participant = form.save(commit=False)
             participant.project_center = center
             participant.save()
+
+            _log_action(
+                user=request.user,
+                action="CREATE",
+                project_center=center,
+                participant_id=participant.participant_id,
+                details=f"Created participant: {participant.participant_name}",
+            )
+
             messages.success(request, "Participant saved successfully.")
             return redirect("participant_list")
     else:
@@ -137,7 +161,9 @@ def participant_map(request):
             "Your account is not linked to any Project Center. Contact the admin."
         )
 
-    participants = Participant.objects.filter(project_center=center).order_by("participant_name")
+    participants = Participant.objects.filter(project_center=center).order_by(
+        "participant_name"
+    )
 
     participants_data = [
         {
@@ -168,6 +194,11 @@ def participant_edit(request, pk):
         return HttpResponseForbidden("You are not assigned to a Project Center.")
 
     participant = get_object_or_404(Participant, pk=pk, project_center=center)
+    old_name = participant.participant_name
+    old_caregiver = participant.caregiver_name
+    old_sex = participant.sex
+    old_lat = str(participant.house_latitude)
+    old_lng = str(participant.house_longitude)
 
     if request.method == "POST":
         form = ParticipantForm(request.POST, instance=participant)
@@ -175,6 +206,22 @@ def participant_edit(request, pk):
             obj = form.save(commit=False)
             obj.project_center = center
             obj.save()
+
+            details = (
+                f"Updated participant {participant.participant_id}. "
+                f"Old: name={old_name}, sex={old_sex}, caregiver={old_caregiver}, lat={old_lat}, lng={old_lng}. "
+                f"New: name={obj.participant_name}, sex={obj.sex}, caregiver={obj.caregiver_name}, "
+                f"lat={obj.house_latitude}, lng={obj.house_longitude}."
+            )
+            _log_action(
+                user=request.user,
+                action="UPDATE",
+                project_center=center,
+                participant_id=obj.participant_id,
+                details=details,
+            )
+
+            messages.success(request, "Participant updated successfully.")
             return redirect("participant_list")
     else:
         form = ParticipantForm(instance=participant)
@@ -198,7 +245,20 @@ def participant_delete(request, pk):
     participant = get_object_or_404(Participant, pk=pk, project_center=center)
 
     if request.method == "POST":
+        pid = participant.participant_id
+        pname = participant.participant_name
+
+        # Log BEFORE deleting so we never lose reference details
+        _log_action(
+            user=request.user,
+            action="DELETE",
+            project_center=center,
+            participant_id=pid,
+            details=f"Deleted participant: {pname}",
+        )
+
         participant.delete()
+        messages.success(request, f"Deleted participant: {pname}")
         return redirect("participant_list")
 
     return render(
@@ -294,6 +354,7 @@ def participant_upload(request):
         created = 0
         skipped = 0
         errors = []
+        created_centers = set()
 
         for r in rows:
             if not r.get("is_valid"):
@@ -319,10 +380,20 @@ def participant_upload(request):
                 p.full_clean()
                 p.save()
                 created += 1
+                created_centers.add(center.center_code)
 
             except Exception as e:
                 skipped += 1
                 errors.append(f"Row {r.get('row_number')}: {e}")
+
+        # Log the import summary (one log record per import)
+        _log_action(
+            user=request.user,
+            action="CSV_IMPORT",
+            project_center=None,
+            participant_id=None,
+            details=f"CSV import completed. Created={created}, Skipped={skipped}, Centers={sorted(created_centers)}",
+        )
 
         # clear preview after import attempt
         request.session.pop(SESSION_KEY, None)
@@ -376,10 +447,8 @@ def participant_upload(request):
     return render(request, "centers/participant_upload.html", {"form": form})
 
 
-
 @login_required
 def participants_csv_template(request):
-
     if not request.user.is_superuser:
         return HttpResponseForbidden("Only National Office can download the template.")
 
@@ -388,36 +457,36 @@ def participants_csv_template(request):
 
     writer = csv.writer(response)
 
-    # Header row
-    writer.writerow([
-        "center_code",
-        "participant_name",
-        "participant_id",
-        "sex",
-        "caregiver_name",
-        "house_latitude",
-        "house_longitude",
-    ])
+    writer.writerow(
+        [
+            "center_code",
+            "participant_name",
+            "participant_id",
+            "sex",
+            "caregiver_name",
+            "house_latitude",
+            "house_longitude",
+        ]
+    )
 
-    # Example row
-    writer.writerow([
-        "MD1111",
-        "John Doe",
-        "MD1111-001",
-        "M",
-        "Jane Doe",
-        "39.2904",
-        "-76.6122",
-    ])
+    writer.writerow(
+        [
+            "MD1111",
+            "John Doe",
+            "MD1111-001",
+            "M",
+            "Jane Doe",
+            "39.2904",
+            "-76.6122",
+        ]
+    )
 
     return response
 
-from django.contrib.auth.decorators import login_required, user_passes_test
-from .models import ProjectCenter
-from django.shortcuts import render
 
 def is_superuser(user):
     return user.is_superuser
+
 
 @login_required
 @user_passes_test(is_superuser)
