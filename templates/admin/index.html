@@ -1,0 +1,23 @@
+{% extends "admin/index.html" %}
+
+{% block content %}
+
+  <div class="module">
+    <h2>Participant Tools</h2>
+    <ul>
+      <li>
+        <a href="{% url 'participant_upload' %}">
+          Upload Participants (CSV)
+        </a>
+      </li>
+      <li>
+        <a href="{% url 'participants_csv_template' %}">
+          Download CSV Template
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  {{ block.super }}
+
+{% endblock %}
