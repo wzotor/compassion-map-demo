@@ -770,3 +770,85 @@ def national_center_add(request):
         form = ProjectCenterForm()
 
     return _render(request, "centers/national_center_form.html", {"form": form})
+
+@login_required
+def national_participant_edit(request, pk):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    participant = get_object_or_404(Participant, pk=pk)
+
+    old_center = participant.project_center.center_code if participant.project_center else ""
+    old_name = participant.participant_name
+    old_pid = participant.participant_id
+    old_sex = participant.sex
+    old_caregiver = participant.caregiver_name
+    old_lat = str(participant.house_latitude)
+    old_lng = str(participant.house_longitude)
+
+    if request.method == "POST":
+        form = ParticipantForm(request.POST, instance=participant, show_center_field=True)
+        if form.is_valid():
+            obj = form.save()
+
+            details = (
+                f"National update participant {old_pid}. "
+                f"Old: center={old_center}, name={old_name}, sex={old_sex}, caregiver={old_caregiver}, "
+                f"lat={old_lat}, lng={old_lng}. "
+                f"New: center={obj.project_center.center_code if obj.project_center else ''}, "
+                f"name={obj.participant_name}, sex={obj.sex}, caregiver={obj.caregiver_name}, "
+                f"lat={obj.house_latitude}, lng={obj.house_longitude}."
+            )
+            _log_action(
+                user=request.user,
+                action="UPDATE",
+                project_center=obj.project_center,
+                participant_id=obj.participant_id,
+                details=details,
+            )
+
+            messages.success(request, "Participant updated successfully.")
+            return redirect("national_participants_list")
+    else:
+        form = ParticipantForm(instance=participant, show_center_field=True)
+
+    return _render(
+        request,
+        "centers/national_participant_form.html",
+        {"form": form, "mode": "edit"},
+    )
+
+
+@login_required
+def national_participant_delete(request, pk):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    participant = get_object_or_404(Participant, pk=pk)
+
+    if request.method == "POST":
+        pid = participant.participant_id
+        pname = participant.participant_name
+        pc = participant.project_center
+
+        _log_action(
+            user=request.user,
+            action="DELETE",
+            project_center=pc,
+            participant_id=pid,
+            details=f"National deleted participant: {pname}",
+        )
+
+        participant.delete()
+        messages.success(request, f"Deleted participant: {pname}")
+        return redirect("national_participants_list")
+
+    return _render(
+        request,
+        "centers/national_participant_confirm_delete.html",
+        {"participant": participant},
+    )
