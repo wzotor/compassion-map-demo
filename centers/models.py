@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
 
 
 class ProjectCenter(models.Model):
@@ -101,8 +102,33 @@ class AuditLog(models.Model):
     )
 
     participant_id = models.CharField(max_length=50, null=True, blank=True)
-
     details = models.TextField(blank=True)
 
     def __str__(self):
         return f"{self.action} by {self.user} at {self.timestamp}"
+
+    # ---------------------------
+    # IMMUTABILITY ENFORCEMENT
+    # ---------------------------
+    def save(self, *args, **kwargs):
+        """
+        Allow creation, but block updates.
+        """
+        if self.pk is not None:
+            raise ValidationError("Audit logs are immutable and cannot be edited.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """
+        Block deletion.
+        """
+        raise ValidationError("Audit logs are immutable and cannot be deleted.")
+
+    class Meta:
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["timestamp"]),
+            models.Index(fields=["action"]),
+            models.Index(fields=["participant_id"]),
+            models.Index(fields=["project_center"]),
+        ]

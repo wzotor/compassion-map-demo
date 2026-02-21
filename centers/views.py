@@ -1,5 +1,8 @@
+# centers/views.py
+
 import csv
 import io
+from datetime import timedelta
 
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required, user_passes_test
@@ -7,6 +10,9 @@ from django.http import HttpResponseForbidden, HttpResponse
 from django.contrib import messages
 from django.contrib.auth import logout
 from django.views.decorators.http import require_http_methods
+from django.utils import timezone
+from django.db.models import Count
+from django.db.models.functions import TruncDate
 
 from .models import ProjectCenter, Participant, UserProfile, AuditLog
 from .forms import ParticipantForm, ParticipantUploadForm
@@ -27,6 +33,38 @@ def _log_action(user, action, project_center=None, participant_id=None, details=
     except Exception:
         # Never break the app if logging fails
         pass
+
+
+def is_national_officer(user):
+    """
+    National Officer = user in Group named 'National Office'
+    No need to assign Django admin permissions for this group.
+    """
+    if not user.is_authenticated:
+        return False
+    return user.groups.filter(name="National Office").exists()
+
+
+def is_national_or_superuser(user):
+    """
+    Allow access to national pages for:
+    - Superuser (true backend admin)
+    - National Office group users (national officers)
+    """
+    if not user.is_authenticated:
+        return False
+    return user.is_superuser or is_national_officer(user)
+
+
+def _render(request, template_name, context=None):
+    """
+    Always inject role flags into templates so navbar logic is simple and safe.
+    """
+    if context is None:
+        context = {}
+    context["is_national"] = is_national_officer(request.user)
+    context["is_national_access"] = is_national_or_superuser(request.user)
+    return render(request, template_name, context)
 
 
 def map_view(request):
@@ -64,7 +102,7 @@ def map_view(request):
         "selected_cluster": cluster,
     }
 
-    return render(request, "centers/map.html", context)
+    return _render(request, "centers/map.html", context)
 
 
 def _get_user_center(user):
@@ -81,19 +119,21 @@ def participant_list(request):
     if center is None:
         if request.user.is_superuser:
             return redirect("/admin/")
+
+        if is_national_officer(request.user):
+            return redirect("national_dashboard")
+
         return HttpResponseForbidden(
             "Your account is not linked to any Project Center. Contact the admin."
         )
 
-    participants = Participant.objects.filter(project_center=center).order_by(
-        "participant_name"
-    )
+    participants = Participant.objects.filter(project_center=center).order_by("participant_name")
 
     total_count = participants.count()
     male_count = participants.filter(sex="M").count()
     female_count = participants.filter(sex="F").count()
 
-    return render(
+    return _render(
         request,
         "centers/participants_list.html",
         {
@@ -108,6 +148,9 @@ def participant_list(request):
 
 @login_required
 def participant_add(request):
+    if is_national_officer(request.user) and not request.user.is_superuser:
+        return redirect("national_dashboard")
+
     center = _get_user_center(request.user)
 
     if center is None:
@@ -137,7 +180,7 @@ def participant_add(request):
     else:
         form = ParticipantForm()
 
-    return render(
+    return _render(
         request,
         "centers/participant_form.html",
         {"form": form, "center": center},
@@ -152,6 +195,9 @@ def logout_view(request):
 
 @login_required
 def participant_map(request):
+    if is_national_officer(request.user) and not request.user.is_superuser:
+        return redirect("national_dashboard")
+
     center = _get_user_center(request.user)
 
     if center is None:
@@ -161,9 +207,7 @@ def participant_map(request):
             "Your account is not linked to any Project Center. Contact the admin."
         )
 
-    participants = Participant.objects.filter(project_center=center).order_by(
-        "participant_name"
-    )
+    participants = Participant.objects.filter(project_center=center).order_by("participant_name")
 
     participants_data = [
         {
@@ -181,13 +225,15 @@ def participant_map(request):
         "participants": participants,
         "participants_json": participants_data,
     }
-    return render(request, "centers/participants_map.html", context)
+    return _render(request, "centers/participants_map.html", context)
 
 
 @login_required
 def participant_edit(request, pk):
     if request.user.is_superuser:
         return redirect("/admin/")
+    if is_national_officer(request.user):
+        return redirect("national_dashboard")
 
     center = _get_user_center(request.user)
     if center is None:
@@ -226,7 +272,7 @@ def participant_edit(request, pk):
     else:
         form = ParticipantForm(instance=participant)
 
-    return render(
+    return _render(
         request,
         "centers/participant_form.html",
         {"form": form, "mode": "edit", "center": center},
@@ -237,6 +283,8 @@ def participant_edit(request, pk):
 def participant_delete(request, pk):
     if request.user.is_superuser:
         return redirect("/admin/")
+    if is_national_officer(request.user):
+        return redirect("national_dashboard")
 
     center = _get_user_center(request.user)
     if center is None:
@@ -248,7 +296,6 @@ def participant_delete(request, pk):
         pid = participant.participant_id
         pname = participant.participant_name
 
-        # Log BEFORE deleting so we never lose reference details
         _log_action(
             user=request.user,
             action="DELETE",
@@ -261,7 +308,7 @@ def participant_delete(request, pk):
         messages.success(request, f"Deleted participant: {pname}")
         return redirect("participant_list")
 
-    return render(
+    return _render(
         request,
         "centers/participant_confirm_delete.html",
         {"participant": participant, "center": center},
@@ -270,7 +317,7 @@ def participant_delete(request, pk):
 
 @login_required
 def participant_upload(request):
-    if not request.user.is_superuser:
+    if not is_national_or_superuser(request.user):
         return HttpResponseForbidden("Only National Office can upload participants.")
 
     SESSION_KEY = "participants_upload_preview_rows"
@@ -343,7 +390,6 @@ def participant_upload(request):
 
         return rows
 
-    # CONFIRM IMPORT
     if request.method == "POST" and request.POST.get("confirm_import") == "1":
         rows = request.session.get(SESSION_KEY)
 
@@ -386,7 +432,6 @@ def participant_upload(request):
                 skipped += 1
                 errors.append(f"Row {r.get('row_number')}: {e}")
 
-        # Log the import summary (one log record per import)
         _log_action(
             user=request.user,
             action="CSV_IMPORT",
@@ -395,7 +440,6 @@ def participant_upload(request):
             details=f"CSV import completed. Created={created}, Skipped={skipped}, Centers={sorted(created_centers)}",
         )
 
-        # clear preview after import attempt
         request.session.pop(SESSION_KEY, None)
 
         if created > 0:
@@ -403,7 +447,7 @@ def participant_upload(request):
         else:
             messages.warning(request, f"Import complete. Created: {created}, Skipped: {skipped}")
 
-        return render(
+        return _render(
             request,
             "centers/participant_upload.html",
             {
@@ -412,7 +456,6 @@ def participant_upload(request):
             },
         )
 
-    # PREVIEW
     if request.method == "POST":
         form = ParticipantUploadForm(request.POST, request.FILES)
         if form.is_valid():
@@ -421,7 +464,7 @@ def participant_upload(request):
                 rows = parse_csv(csv_file)
             except Exception as e:
                 messages.error(request, str(e))
-                return render(request, "centers/participant_upload.html", {"form": form})
+                return _render(request, "centers/participant_upload.html", {"form": form})
 
             request.session[SESSION_KEY] = rows
 
@@ -431,7 +474,7 @@ def participant_upload(request):
 
             preview_rows = rows[:100]
 
-            return render(
+            return _render(
                 request,
                 "centers/participant_upload.html",
                 {
@@ -441,15 +484,14 @@ def participant_upload(request):
                 },
             )
 
-    # GET
     request.session.pop(SESSION_KEY, None)
     form = ParticipantUploadForm()
-    return render(request, "centers/participant_upload.html", {"form": form})
+    return _render(request, "centers/participant_upload.html", {"form": form})
 
 
 @login_required
 def participants_csv_template(request):
-    if not request.user.is_superuser:
+    if not is_national_or_superuser(request.user):
         return HttpResponseForbidden("Only National Office can download the template.")
 
     response = HttpResponse(content_type="text/csv")
@@ -484,12 +526,111 @@ def participants_csv_template(request):
     return response
 
 
-def is_superuser(user):
-    return user.is_superuser
+@login_required
+@user_passes_test(is_national_or_superuser)
+def national_centers_map(request):
+    centers = ProjectCenter.objects.all()
+    return _render(request, "centers/national_centers_map.html", {"centers": centers})
 
 
 @login_required
-@user_passes_test(is_superuser)
-def national_centers_map(request):
-    centers = ProjectCenter.objects.all()
-    return render(request, "centers/national_centers_map.html", {"centers": centers})
+@user_passes_test(is_national_or_superuser)
+def national_dashboard(request):
+    now = timezone.now()
+    days_7 = now - timedelta(days=7)
+    days_30 = now - timedelta(days=30)
+
+    total_centers = ProjectCenter.objects.count()
+    total_participants = Participant.objects.count()
+
+    logs_last_7 = AuditLog.objects.filter(timestamp__gte=days_7).count()
+    logs_last_30 = AuditLog.objects.filter(timestamp__gte=days_30).count()
+
+    deletes_last_30 = AuditLog.objects.filter(timestamp__gte=days_30, action="DELETE").count()
+    csv_imports_last_30 = AuditLog.objects.filter(timestamp__gte=days_30, action="CSV_IMPORT").count()
+
+    by_territory_qs = (
+        Participant.objects.select_related("project_center")
+        .values("project_center__territory")
+        .annotate(total=Count("id"))
+        .order_by("-total")
+    )
+    territory_labels = [(r["project_center__territory"] or "Unknown") for r in by_territory_qs]
+    territory_values = [r["total"] for r in by_territory_qs]
+
+    by_sex_qs = Participant.objects.values("sex").annotate(total=Count("id")).order_by("sex")
+    sex_labels = []
+    sex_values = []
+    for r in by_sex_qs:
+        label = r["sex"] or "Unknown"
+        if label == "M":
+            label = "Male"
+        elif label == "F":
+            label = "Female"
+        sex_labels.append(label)
+        sex_values.append(r["total"])
+
+    logs_by_day_qs = (
+        AuditLog.objects.filter(timestamp__gte=days_30)
+        .annotate(day=TruncDate("timestamp"))
+        .values("day")
+        .annotate(total=Count("id"))
+        .order_by("day")
+    )
+    logs_by_day_map = {str(r["day"]): r["total"] for r in logs_by_day_qs}
+
+    date_labels = []
+    date_values = []
+    for i in range(30, -1, -1):
+        d = (now - timedelta(days=i)).date()
+        key = str(d)
+        date_labels.append(key)
+        date_values.append(int(logs_by_day_map.get(key, 0)))
+
+    actions_qs = (
+        AuditLog.objects.filter(timestamp__gte=days_30)
+        .values("action")
+        .annotate(total=Count("id"))
+        .order_by("action")
+    )
+    action_labels = [r["action"] for r in actions_qs]
+    action_values = [r["total"] for r in actions_qs]
+
+    top_centers = (
+        AuditLog.objects.filter(timestamp__gte=days_30)
+        .values("project_center__center_code", "project_center__name")
+        .annotate(total=Count("id"))
+        .order_by("-total")[:10]
+    )
+
+    top_users = (
+        AuditLog.objects.filter(timestamp__gte=days_30)
+        .values("user__username", "user__email")
+        .annotate(total=Count("id"))
+        .order_by("-total")[:10]
+    )
+
+    recent_logs = AuditLog.objects.select_related("user", "project_center").order_by("-timestamp")[:20]
+
+    context = {
+        "total_centers": total_centers,
+        "total_participants": total_participants,
+        "logs_last_7": logs_last_7,
+        "logs_last_30": logs_last_30,
+        "deletes_last_30": deletes_last_30,
+        "csv_imports_last_30": csv_imports_last_30,
+        "territory_labels": territory_labels,
+        "territory_values": territory_values,
+        "sex_labels": sex_labels,
+        "sex_values": sex_values,
+        "date_labels": date_labels,
+        "date_values": date_values,
+        "action_labels": action_labels,
+        "action_values": action_values,
+        "top_centers": top_centers,
+        "top_users": top_users,
+        "recent_logs": recent_logs,
+        "now": now,
+    }
+
+    return _render(request, "centers/national_dashboard.html", context)
