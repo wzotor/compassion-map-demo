@@ -11,7 +11,7 @@ from django.contrib import messages
 from django.contrib.auth import logout
 from django.views.decorators.http import require_http_methods
 from django.utils import timezone
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.db.models.functions import TruncDate
 
 from .models import ProjectCenter, Participant, UserProfile, AuditLog
@@ -127,7 +127,9 @@ def participant_list(request):
             "Your account is not linked to any Project Center. Contact the admin."
         )
 
-    participants = Participant.objects.filter(project_center=center).order_by("participant_name")
+    participants = Participant.objects.filter(project_center=center).order_by(
+        "participant_name"
+    )
 
     total_count = participants.count()
     male_count = participants.filter(sex="M").count()
@@ -207,7 +209,9 @@ def participant_map(request):
             "Your account is not linked to any Project Center. Contact the admin."
         )
 
-    participants = Participant.objects.filter(project_center=center).order_by("participant_name")
+    participants = Participant.objects.filter(project_center=center).order_by(
+        "participant_name"
+    )
 
     participants_data = [
         {
@@ -526,6 +530,69 @@ def participants_csv_template(request):
     return response
 
 
+# NEW: National Office Participants landing page (the Participants tab target)
+@login_required
+def national_participants_home(request):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    return _render(request, "centers/national_participants_home.html", {})
+
+
+@login_required
+def national_participants_list(request):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    participants = Participant.objects.select_related("project_center").all().order_by(
+        "participant_name"
+    )
+
+    q = (request.GET.get("q") or "").strip()
+    sex = (request.GET.get("sex") or "").strip().upper()
+    center_code = (request.GET.get("center_code") or "").strip()
+
+    if q:
+        participants = participants.filter(
+            Q(participant_name__icontains=q)
+            | Q(participant_id__icontains=q)
+            | Q(caregiver_name__icontains=q)
+        )
+
+    if sex in ["M", "F"]:
+        participants = participants.filter(sex=sex)
+
+    if center_code:
+        participants = participants.filter(project_center__center_code=center_code)
+
+    total_count = participants.count()
+    male_count = participants.filter(sex="M").count()
+    female_count = participants.filter(sex="F").count()
+
+    centers = ProjectCenter.objects.all().order_by("center_code")
+
+    return _render(
+        request,
+        "centers/national_participants_list.html",
+        {
+            "participants": participants,
+            "centers": centers,
+            "total_count": total_count,
+            "male_count": male_count,
+            "female_count": female_count,
+            "q": q,
+            "sex": sex,
+            "center_code": center_code,
+        },
+    )
+
+
 @login_required
 @user_passes_test(is_national_or_superuser)
 def national_centers_map(request):
@@ -634,3 +701,72 @@ def national_dashboard(request):
     }
 
     return _render(request, "centers/national_dashboard.html", context)
+
+
+# ==============================
+# NATIONAL CENTERS MANAGEMENT
+# ==============================
+
+@login_required
+def national_centers_list(request):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    centers = ProjectCenter.objects.all().order_by("center_code")
+
+    q = (request.GET.get("q") or "").strip()
+    territory = (request.GET.get("territory") or "").strip()
+    cluster = (request.GET.get("cluster") or "").strip()
+
+    if q:
+        centers = centers.filter(
+            Q(name__icontains=q)
+            | Q(center_code__icontains=q)
+            | Q(address__icontains=q)
+        )
+
+    if territory:
+        centers = centers.filter(territory__icontains=territory)
+
+    if cluster:
+        centers = centers.filter(cluster__icontains=cluster)
+
+    return _render(
+        request,
+        "centers/national_centers_list.html",
+        {"centers": centers, "q": q, "territory": territory, "cluster": cluster},
+    )
+
+
+@login_required
+def national_center_add(request):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    from .forms import ProjectCenterForm
+
+    if request.method == "POST":
+        form = ProjectCenterForm(request.POST)
+        if form.is_valid():
+            center = form.save()
+
+            _log_action(
+                user=request.user,
+                action="CREATE_CENTER",
+                project_center=center,
+                participant_id=None,
+                details=f"Created Project Center: {center.center_code}",
+            )
+
+            messages.success(request, "Project Center created successfully.")
+            return redirect("national_centers_list")
+    else:
+        form = ProjectCenterForm()
+
+    return _render(request, "centers/national_center_form.html", {"form": form})

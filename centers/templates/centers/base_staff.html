@@ -14,7 +14,14 @@
 
   <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
     <div class="container-fluid">
-      <a class="navbar-brand" href="{% url 'participant_list' %}">Compassion Map</a>
+      
+      {% if request.user.is_superuser %}
+        <a class="navbar-brand" href="{% url 'participant_list' %}">Compassion Map</a>
+      {% elif is_national %}
+        <a class="navbar-brand" href="{% url 'national_dashboard' %}">Compassion Map</a>
+      {% else %}
+        <a class="navbar-brand" href="{% url 'participant_list' %}">Compassion Map</a>
+      {% endif %}
 
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
         <span class="navbar-toggler-icon"></span>
@@ -22,8 +29,16 @@
 
       <div class="collapse navbar-collapse" id="nav">
         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+
+          <!-- Participants Tab -->
           <li class="nav-item">
-            <a class="nav-link" href="{% url 'participant_list' %}">Participants</a>
+            {% if request.user.is_superuser %}
+              <a class="nav-link" href="{% url 'participant_list' %}">Participants</a>
+            {% elif is_national %}
+              <a class="nav-link" href="{% url 'national_participants_home' %}">Participants</a>
+            {% else %}
+              <a class="nav-link" href="{% url 'participant_list' %}">Participants</a>
+            {% endif %}
           </li>
 
           {% if center %}
