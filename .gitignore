@@ -17,3 +17,9 @@ db.sqlite3
 # VS Code
 .vscode/
 Microsoft VS Code/
+
+# Local data dumps
+centers.json
+participants.json
+userprofiles.json
+users.json
