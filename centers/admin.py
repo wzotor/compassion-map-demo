@@ -1,4 +1,8 @@
+import csv
 from django.contrib import admin
+from django.http import HttpResponse
+from django.urls import path
+
 from .models import ProjectCenter, Participant, UserProfile, AuditLog
 
 
@@ -53,11 +57,12 @@ class UserProfileAdmin(admin.ModelAdmin):
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ("timestamp", "action", "user", "project_center", "participant_id")
-    list_filter = ("action", "project_center", "timestamp")
+    list_filter = ("action", "project_center", "timestamp", "user")
     search_fields = (
         "participant_id",
         "details",
         "user__username",
+        "user__email",
         "project_center__center_code",
         "project_center__name",
     )
@@ -76,3 +81,58 @@ class AuditLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    # Use a custom changelist template that adds an export button
+    change_list_template = "admin/auditlog_change_list.html"
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                "export-csv/",
+                self.admin_site.admin_view(self.export_csv),
+                name="auditlog_export_csv",
+            ),
+        ]
+        return custom_urls + urls
+
+    def export_csv(self, request):
+        """
+        Export the current filtered queryset from the changelist.
+        This respects all filters/search currently applied in admin.
+        """
+        cl = self.get_changelist_instance(request)
+        qs = cl.get_queryset(request)
+
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="audit_logs_export.csv"'
+
+        writer = csv.writer(response)
+        writer.writerow(
+            [
+                "timestamp",
+                "action",
+                "user",
+                "user_email",
+                "project_center",
+                "center_code",
+                "participant_id",
+                "details",
+            ]
+        )
+
+        for log in qs.select_related("user", "project_center").iterator():
+            writer.writerow(
+                [
+                    log.timestamp.isoformat() if log.timestamp else "",
+                    log.action,
+                    getattr(log.user, "username", "") if log.user else "",
+                    getattr(log.user, "email", "") if log.user else "",
+                    str(log.project_center) if log.project_center else "",
+                    getattr(log.project_center, "center_code", "") if log.project_center else "",
+                    log.participant_id or "",
+                    log.details or "",
+                ]
+            )
+
+        return response

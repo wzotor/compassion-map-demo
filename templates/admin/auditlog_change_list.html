@@ -1,0 +1,15 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools %}
+  <div class="object-tools">
+    <ul class="object-tools">
+      <li>
+        <a href="export-csv/?{{ request.GET.urlencode }}" class="button">
+          Export current filtered logs (CSV)
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  {{ block.super }}
+{% endblock %}
