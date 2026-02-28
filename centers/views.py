@@ -16,6 +16,7 @@ from django.db.models.functions import TruncDate
 
 from .models import ProjectCenter, Participant, UserProfile, AuditLog
 from .forms import ParticipantForm, ParticipantUploadForm
+from django.core.paginator import Paginator
 
 
 def _log_action(user, action, project_center=None, participant_id=None, details=""):
@@ -542,6 +543,33 @@ def national_participants_home(request):
     return _render(request, "centers/national_participants_home.html", {})
 
 
+def _national_participants_filtered_qs(request):
+    """
+    Shared filter logic for national participants list and export.
+    Preserves current filters: q, sex, center_code.
+    Matches the existing list behavior.
+    """
+    qs = Participant.objects.select_related("project_center").all().order_by("participant_name")
+
+    q = (request.GET.get("q") or "").strip()
+    sex = (request.GET.get("sex") or "").strip().upper()
+    center_code = (request.GET.get("center_code") or "").strip()
+
+    if q:
+        qs = qs.filter(
+            Q(participant_name__icontains=q)
+            | Q(participant_id__icontains=q)
+            | Q(caregiver_name__icontains=q)
+        )
+
+    if sex in ["M", "F"]:
+        qs = qs.filter(sex=sex)
+
+    if center_code:
+        qs = qs.filter(project_center__center_code=center_code)
+
+    return qs, q, sex, center_code
+
 @login_required
 def national_participants_list(request):
     if request.user.is_superuser:
@@ -550,30 +578,22 @@ def national_participants_list(request):
     if not is_national_officer(request.user):
         return HttpResponseForbidden("Only National Office users can access this page.")
 
-    participants = Participant.objects.select_related("project_center").all().order_by(
-        "participant_name"
-    )
+    participants_qs, q, sex, center_code = _national_participants_filtered_qs(request)
 
-    q = (request.GET.get("q") or "").strip()
-    sex = (request.GET.get("sex") or "").strip().upper()
-    center_code = (request.GET.get("center_code") or "").strip()
+    # Counts are based on the full filtered queryset (not just the current page)
+    total_count = participants_qs.count()
+    male_count = participants_qs.filter(sex="M").count()
+    female_count = participants_qs.filter(sex="F").count()
 
-    if q:
-        participants = participants.filter(
-            Q(participant_name__icontains=q)
-            | Q(participant_id__icontains=q)
-            | Q(caregiver_name__icontains=q)
-        )
+    # Pagination
+    page_number = request.GET.get("page", 1)
+    paginator = Paginator(participants_qs, 50)  # 50 per page
+    participants_page = paginator.get_page(page_number)
 
-    if sex in ["M", "F"]:
-        participants = participants.filter(sex=sex)
-
-    if center_code:
-        participants = participants.filter(project_center__center_code=center_code)
-
-    total_count = participants.count()
-    male_count = participants.filter(sex="M").count()
-    female_count = participants.filter(sex="F").count()
+    # Clean pagination links: keep filters but remove 'page'
+    params = request.GET.copy()
+    params.pop("page", None)
+    querystring_no_page = params.urlencode()
 
     centers = ProjectCenter.objects.all().order_by("center_code")
 
@@ -581,7 +601,10 @@ def national_participants_list(request):
         request,
         "centers/national_participants_list.html",
         {
-            "participants": participants,
+            "participants": participants_page,
+            "page_obj": participants_page,
+            "paginator": paginator,
+            "querystring_no_page": querystring_no_page,
             "centers": centers,
             "total_count": total_count,
             "male_count": male_count,
@@ -591,6 +614,58 @@ def national_participants_list(request):
             "center_code": center_code,
         },
     )
+
+@login_required
+def national_participants_export_csv(request):
+    """
+    Export national participants to CSV.
+    Must preserve filters (q, sex, center_code) and keep the same access rules as the list:
+    - Superuser is redirected to /admin/
+    - Only National Office users can export from in-app UI
+    """
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this export.")
+
+    participants, q, sex, center_code = _national_participants_filtered_qs(request)
+
+    ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"national_participants_export_{ts}.csv"
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+    writer = csv.writer(response)
+    writer.writerow(
+        [
+            "center_code",
+            "participant_name",
+            "participant_id",
+            "sex",
+            "caregiver_name",
+            "house_latitude",
+            "house_longitude",
+            "created_at",
+        ]
+    )
+
+    for p in participants.iterator(chunk_size=2000):
+        writer.writerow(
+            [
+                p.project_center.center_code if p.project_center else "",
+                p.participant_name,
+                p.participant_id,
+                p.sex,
+                p.caregiver_name,
+                p.house_latitude,
+                p.house_longitude,
+                p.created_at.isoformat() if getattr(p, "created_at", None) else "",
+            ]
+        )
+
+    return response
 
 
 @login_required
@@ -715,31 +790,81 @@ def national_centers_list(request):
     if not is_national_officer(request.user):
         return HttpResponseForbidden("Only National Office users can access this page.")
 
-    centers = ProjectCenter.objects.all().order_by("center_code")
+    centers_qs = ProjectCenter.objects.all()
 
     q = (request.GET.get("q") or "").strip()
     territory = (request.GET.get("territory") or "").strip()
     cluster = (request.GET.get("cluster") or "").strip()
 
     if q:
-        centers = centers.filter(
+        centers_qs = centers_qs.filter(
             Q(name__icontains=q)
             | Q(center_code__icontains=q)
             | Q(address__icontains=q)
         )
 
     if territory:
-        centers = centers.filter(territory__icontains=territory)
+        centers_qs = centers_qs.filter(territory__icontains=territory)
 
     if cluster:
-        centers = centers.filter(cluster__icontains=cluster)
+        centers_qs = centers_qs.filter(cluster__icontains=cluster)
+
+    # -------------------------
+    # Server-side sorting
+    # -------------------------
+    sort = (request.GET.get("sort") or "center_code").strip()
+    direction = (request.GET.get("dir") or "asc").strip().lower()
+
+    allowed_sorts = {
+        "center_code": "center_code",
+        "name": "name",
+        "territory": "territory",
+        "cluster": "cluster",
+        "beneficiaries": "beneficiaries",
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "address": "address",
+    }
+
+    sort_field = allowed_sorts.get(sort, "center_code")
+    prefix = "-" if direction == "desc" else ""
+    centers_qs = centers_qs.order_by(f"{prefix}{sort_field}", "center_code")
+
+    # -------------------------
+    # Pagination
+    # -------------------------
+    page_number = request.GET.get("page", 1)
+    paginator = Paginator(centers_qs, 50)  # 50 per page
+    centers_page = paginator.get_page(page_number)
+
+    # Querystring helpers
+    qs_no_page = request.GET.copy()
+    if "page" in qs_no_page:
+        qs_no_page.pop("page")
+    querystring_no_page = qs_no_page.urlencode()
+
+    qs_filters_only = request.GET.copy()
+    for key in ["sort", "dir", "page"]:
+        if key in qs_filters_only:
+            qs_filters_only.pop(key)
+    querystring_filters = qs_filters_only.urlencode()
 
     return _render(
         request,
         "centers/national_centers_list.html",
-        {"centers": centers, "q": q, "territory": territory, "cluster": cluster},
+        {
+            "centers": centers_page,
+            "page_obj": centers_page,
+            "paginator": paginator,
+            "querystring_no_page": querystring_no_page,
+            "querystring_filters": querystring_filters,
+            "q": q,
+            "territory": territory,
+            "cluster": cluster,
+            "sort": sort,
+            "dir": direction,
+        },
     )
-
 
 @login_required
 def national_center_add(request):
@@ -770,6 +895,79 @@ def national_center_add(request):
         form = ProjectCenterForm()
 
     return _render(request, "centers/national_center_form.html", {"form": form})
+
+@login_required
+def national_center_edit(request, pk):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    from .forms import ProjectCenterForm
+
+    center = get_object_or_404(ProjectCenter, pk=pk)
+
+    if request.method == "POST":
+        form = ProjectCenterForm(request.POST, instance=center)
+        if form.is_valid():
+            updated_center = form.save()
+
+            _log_action(
+                user=request.user,
+                action="UPDATE_CENTER",
+                project_center=updated_center,
+                participant_id=None,
+                details=f"Updated Project Center: {updated_center.center_code}",
+            )
+
+            messages.success(request, "Project Center updated successfully.")
+            return redirect("national_centers_list")
+    else:
+        form = ProjectCenterForm(instance=center)
+
+    return _render(
+        request,
+        "centers/national_center_form.html",
+        {"form": form, "mode": "edit", "center_obj": center},
+    )
+
+@login_required
+def national_center_delete(request, pk):
+    if request.user.is_superuser:
+        return redirect("/admin/")
+
+    if not is_national_officer(request.user):
+        return HttpResponseForbidden("Only National Office users can access this page.")
+
+    center = get_object_or_404(ProjectCenter, pk=pk)
+
+    has_participants = Participant.objects.filter(project_center=center).exists()
+
+    if request.method == "POST":
+        if has_participants:
+            messages.error(request, "Cannot delete a center that has participants.")
+            return redirect("national_centers_list")
+
+        code = center.center_code
+
+        _log_action(
+            user=request.user,
+            action="DELETE_CENTER",
+            project_center=center,
+            participant_id=None,
+            details=f"Deleted Project Center: {code}",
+        )
+
+        center.delete()
+        messages.success(request, f"Deleted Project Center: {code}")
+        return redirect("national_centers_list")
+
+    return _render(
+        request,
+        "centers/national_center_confirm_delete.html",
+        {"center_obj": center, "has_participants": has_participants},
+    )
 
 @login_required
 def national_participant_edit(request, pk):

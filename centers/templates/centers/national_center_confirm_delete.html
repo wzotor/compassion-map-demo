@@ -1,0 +1,30 @@
+{% extends "centers/base_staff.html" %}
+
+{% block title %}Delete Center | National Office{% endblock %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h4 class="mb-3">Delete Project Center</h4>
+
+      <p class="mb-2">
+        Are you sure you want to delete:
+        <strong>{{ center_obj.center_code }}</strong> - {{ center_obj.name }}?
+      </p>
+
+      {% if has_participants %}
+        <div class="alert alert-warning mb-3">
+          This center has participants, so deletion is blocked.
+        </div>
+
+        <a class="btn btn-secondary" href="{% url 'national_centers_list' %}">Back</a>
+      {% else %}
+        <form method="post" class="d-flex gap-2">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger">Yes, delete</button>
+          <a class="btn btn-secondary" href="{% url 'national_centers_list' %}">Cancel</a>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

@@ -7,7 +7,9 @@ from . import views
 urlpatterns = [
     path("", RedirectView.as_view(url="/participants/", permanent=False), name="home"),
 
+    # =========================
     # Staff routes
+    # =========================
     path("map/", views.map_view, name="map"),
 
     path("participants/", views.participant_list, name="participant_list"),
@@ -24,7 +26,14 @@ urlpatterns = [
     path("national/participants/", views.national_participants_home, name="national_participants_home"),
     path("national/participants/list/", views.national_participants_list, name="national_participants_list"),
 
-    # NEW: National participant edit/delete
+    # National Participants Export CSV
+    path(
+        "national/participants/export/",
+        views.national_participants_export_csv,
+        name="national_participants_export_csv",
+    ),
+
+    # National participant edit/delete
     path("national/participants/<int:pk>/edit/", views.national_participant_edit, name="national_participant_edit"),
     path("national/participants/<int:pk>/delete/", views.national_participant_delete, name="national_participant_delete"),
 
@@ -33,6 +42,8 @@ urlpatterns = [
     # =========================
     path("national/centers/", views.national_centers_list, name="national_centers_list"),
     path("national/centers/add/", views.national_center_add, name="national_center_add"),
+    path("national/centers/<int:pk>/edit/", views.national_center_edit, name="national_center_edit"),
+    path("national/centers/<int:pk>/delete/", views.national_center_delete, name="national_center_delete"),
 
     # =========================
     # National Dashboard & Map
